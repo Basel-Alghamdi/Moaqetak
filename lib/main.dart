@@ -1058,7 +1058,7 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
           ),
         ),
       ),
-    );
+    ));
   }
 
   // Old secondary style removed. Use AppButtons.secondary() from ui.dart

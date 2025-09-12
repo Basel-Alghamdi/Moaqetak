@@ -1404,7 +1404,7 @@ String formatFullArabic(DateTime local) {
     4: 'الخميس',
     5: 'الجمعة',
     6: 'السبت',
-    7: 'الأحد',
+    7: 'الأحد',/*hi there*/
   };
   final dow = days[local.weekday] ?? '';
   return '$dow ${formatDateArabic(local)} ${formatTime12Arabic(local)}';

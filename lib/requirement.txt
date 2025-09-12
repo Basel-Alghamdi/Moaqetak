@@ -1,0 +1,55 @@
+# Project Document - Version 1 Improvements for "مؤقتك"
+
+## General Notes
+- The application language is Arabic (RTL layout must be enforced).
+- Dark Mode remains the default theme.
+
+---
+
+## Home Screen Changes
+1. **Add Plus Icon (أيقونة +)**  
+   - Place a Plus Icon next to the central button "أنشئ موعدك الآن".  
+   - This should be identical to the existing Plus Icon at the top-right corner.
+
+2. **RTL Enforcement**  
+   - Ensure all elements (text, buttons, fields) follow **Right-to-Left (RTL)** orientation.  
+   - This includes alignment, text direction, and icon placement.
+
+---
+
+## Top Section Changes
+### Previous Design:
+- The top-left corner contained the project name: **"مؤقتك"**.
+
+### New Design:
+- Replace project name with a **Login area (تسجيل الدخول)**.
+
+---
+
+## Login & Registration
+When user clicks **"تسجيل الدخول"**, a modal appears with the following:
+
+### Login Form
+- **البريد الإلكتروني**
+- **كلمة المرور**
+- Button: **تسجيل الدخول**
+
+### Registration (إنشاء حساب جديد)
+If the user does not have an account, they can click **"إنشاء حساب جديد"**.  
+A registration form will appear containing:
+
+1. **الاسم الأول**
+2. **اسم العائلة**
+3. **البريد الإلكتروني الشخصي**
+4. **كلمة المرور**
+5. **تأكيد كلمة المرور**
+6. Button: **إنشاء الحساب**
+
+---
+
+## Technical Notes
+- Use a **ready-made authentication library** (e.g., Firebase Authentication or a trusted Flutter package).  
+- This ensures high quality, security, and saves development time.  
+- All UI labels must remain in Arabic, and layout strictly follows RTL standards.  
+
+---

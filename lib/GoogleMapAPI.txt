@@ -1,0 +1,231 @@
+# Google Maps Integration Document — “Mowaqetak” (مؤقتك)
+
+## 1) Scope & Goal
+Provide a focused specification for integrating **Google Maps Platform** into مؤقتك to:
+- Let the user set **الموقع الحالي** (origin) and **الوجهة** (destination) via map & search.
+- If the user doesn’t set origin, request geolocation permission to auto-detect.
+- Fetch predicted **travel duration (minutes)** using Google services.
+- Compute **leave by** (وقت الانطلاق) and **start preparation** (بدء الاستعداد) times by adding:
+  - **مدة الاستعداد (بالدقائق)** and **وقت التأخير المتوقع (بالدقائق)** to the travel duration.
+- All UI is Arabic (RTL), time zone **Asia/Riyadh**, 12‑hour display.
+
+
+## 2) Key Arabic UI Labels (reference only)
+- "الموقع الحالي" (Origin / Current Location)
+- "الوجهة" (Destination)
+- "وقت الموعد" (Appointment Time)
+- "مدة الاستعداد (بالدقائق)" (Preparation Minutes)
+- "وقت التأخير المتوقع (بالدقائق)" (Expected Delay Minutes)
+- "حفظ" (Save)
+- "زمن التنقل تقديري" (shown if dummy fallback used)
+
+
+## 3) Data Model (Maps-related only)
+- origin: { lat: number, lng: number, placeId?: string, address?: string, label: "الموقع الحالي" }
+- destination: { lat: number, lng: number, placeId?: string, address?: string, label: "الوجهة" }
+- travel_mode: "driving" (default, extendable later)
+- travel_duration_minutes: integer (from Google; dummy fallback supported)
+
+> Time computation inputs (provided by rest of app, but used here): appointment_time (ISO 8601, UTC), prep_minutes, expected_delay_minutes.
+
+
+## 4) Front-End Requirements (Maps)
+
+### 4.1 UI & Locale
+- Arabic-only, RTL enforced; dark theme.
+- Map with two selections: **الموقع الحالي** and **الوجهة**.
+- Arabic Places Autocomplete for both fields (language=ar, region=SA).
+
+### 4.2 Location Permission & Acquisition
+- If user did not choose **الموقع الحالي**, request device geolocation:
+  - Flutter: `geolocator` (whenInUse), highAccuracy=true, timeout=10s, maximumAge=60s.
+- On denial/failure: require manual pin placement; show Arabic guidance.
+
+### 4.3 Map Interaction
+- Show Google map with draggable pins for origin & destination.
+- Tapping drops pin; dragging refines coordinates.
+- Optional reverse geocoding to show Arabic address under each pin.
+- Persist `lat/lng` (required) and optionally `placeId`, `address`.
+
+### 4.4 Validation (client-side)
+- Require both **الموقع الحالي** and **الوجهة** before allowing save.
+- Prevent origin == destination (distance > 10m).
+- Prevent submission while offline or while a travel-time request is in flight.
+
+### 4.5 Backend Call for Travel Duration
+- After both points are set (and appointment context is available), call a backend endpoint to fetch travel duration (see §5).
+- Retry once on transient network errors; otherwise show Arabic error and allow retry.
+- On success, display the computed times (client or server computed; see §6).
+
+### 4.6 Error/Offline UX
+- Offline: show Arabic message and retry control.
+- Google quota/invalid key: generic Arabic error; allow retry.
+- Fallback: if backend returns `source="dummy"`, show label **"زمن التنقل تقديري"**.
+
+### 4.7 Security (Front)
+- Never embed the **server key** in the client.
+- Client keys are platform-restricted only (package/bundle/referrer).
+
+### 4.8 Performance Targets
+- P50 map render < 1.5s (mid-tier device).
+- P50 travel-time round-trip (FE↔BE) < 2.5s on 4G.
+
+
+## 5) Back-End Requirements (Maps)
+
+### 5.1 Endpoints (maps-focused)
+- `GET /travel-time?origin_lat&origin_lng&dest_lat&dest_lng&mode=driving&departure_at=<ISO8601>`  
+  Returns: `{ travel_duration_minutes: number, used_traffic: boolean, source: "distance_matrix|directions|dummy" }`
+
+> Optionally: `/compute-times` that accepts origin/destination + appointment_time + prep + delay, and returns travel + derived leave/start-prep in one call.
+
+### 5.2 Google Maps Platform (Server-Side Calls)
+- Prefer **Distance Matrix API** (primary); fallback **Directions API** if needed.
+- Parameters:
+  - `origins=lat,lng` / `destinations=lat,lng`
+  - `mode=driving`
+  - `departure_time=now` (simple) or predicted departure (one refinement iteration)
+  - `traffic_model=best_guess` where supported
+  - `language=ar&region=sa`
+- Response mapping:
+  - Use `duration_in_traffic` if present, else `duration`.
+  - Convert seconds → integer minutes (`travel_duration_minutes`).
+  - Return `used_traffic=true|false` and `source`.
+
+### 5.3 Dummy Fallback (MVP Safety Net)
+- On Google error/timeout (>5s) or quota exceeded → return `source="dummy"` and `travel_duration_minutes=DUMMY_TRAVEL_MINUTES` (configurable; default 20).
+
+### 5.4 Validation (Server)
+- Valid lat/lng; origin ≠ destination.
+- `mode` whitelisted to `"driving"` (for now).
+- `departure_at` ≥ now − 5 minutes (sanity).
+
+### 5.5 Config & Secrets
+- Environment variables:
+  - `GMP_SERVER_KEY` (server-only; restricted by IP/VPC).
+  - Optional: `DUMMY_TRAVEL_MINUTES` (default 20).
+- Timeouts: 5s connect, 5s read; 1 retry with jitter.
+- Logging: redact keys; include correlation-id.
+
+### 5.6 Caching
+- Cache by `(origin,destination,rounded_departure_5m,mode)` for 5 minutes to reduce latency/cost.
+
+### 5.7 Observability
+- Metrics: p50/p95 latency, Google error rate, dummy fallback rate.
+- Alerts at 80% API quota.
+
+
+## 6) Time Computation (context for maps usage)
+Given (from app): `appointment_time` (UTC), `prep_minutes`, `expected_delay_minutes`, and `travel_duration_minutes` (from §5):
+
+- `leave_at = appointment_time − (travel_duration_minutes + expected_delay_minutes)`
+- `start_prep_at = leave_at − prep_minutes`
+
+> Store UTC on server (if computed there). Front-end displays in **Asia/Riyadh** (12h Arabic).
+
+
+## 7) Google Maps Platform — APIs & Keys
+
+### 7.1 Prerequisites
+- Google Cloud project with **billing enabled**.
+- Enable:
+  1) Distance Matrix API (primary travel time)
+  2) Directions API (fallback travel time)
+  3) Places API (Autocomplete/search)
+  4) Geocoding API (optional reverse geocoding)
+  5) Maps SDK for Android / iOS (for native map render)
+  6) Maps JavaScript API (if Flutter Web)
+
+> Geolocation API not required (device GPS used).
+
+### 7.2 Keys Strategy (separate + restricted)
+- **Server key** → `GMP_SERVER_KEY`  
+  - Used ONLY server-side for Distance Matrix / Directions / Geocoding.  
+  - Restrict by IP/VPC; keep in secret manager/env; never logged or returned.
+- **Android client key** → `GMP_ANDROID_KEY` (restrict by package + SHA-1)
+- **iOS client key** → `GMP_IOS_KEY` (restrict by Bundle ID)
+- **Web client key** (if needed) → `GMP_CLIENT_WEB_KEY` (restrict by exact referrers)
+
+### 7.3 Backend Sample (Distance Matrix)
+```
+GET https://maps.googleapis.com/maps/api/distancematrix/json
+  ?origins=<ORIGIN_LAT>,<ORIGIN_LNG>
+  &destinations=<DEST_LAT>,<DEST_LNG>
+  &mode=driving
+  &departure_time=now
+  &traffic_model=best_guess
+  &language=ar&region=sa
+  &key=${GMP_SERVER_KEY}
+```
+- Parse `rows[0].elements[0].duration_in_traffic.value` (seconds) if present,
+  else `duration.value`. → minutes.
+
+### 7.4 Front-End Keys Placement (Flutter)
+**Android**
+- `android/app/src/main/AndroidManifest.xml`
+  ```xml
+  <meta-data
+      android:name="com.google.android.geo.API_KEY"
+      android:value="@string/google_maps_api_key"/>
+  ```
+- `android/app/src/main/res/values/strings.xml`
+  ```xml
+  <string name="google_maps_api_key">YOUR_GMP_ANDROID_KEY</string>
+  ```
+
+**iOS**
+- `ios/Runner/Info.plist`
+  ```xml
+  <key>GMSApiKey</key>
+  <string>YOUR_GMP_IOS_KEY</string>
+  ```
+- If using Places in code:
+  ```swift
+  GMSServices.provideAPIKey("YOUR_GMP_IOS_KEY")
+  GMSPlacesClient.provideAPIKey("YOUR_GMP_IOS_KEY")
+  ```
+
+**Web (optional)**
+- `web/index.html`
+  ```html
+  <script async
+    src="https://maps.googleapis.com/maps/api/js?key=YOUR_GMP_CLIENT_WEB_KEY&libraries=places&language=ar&region=SA">
+  </script>
+  ```
+
+### 7.5 Security & Quotas
+- Server key is never shipped to clients; rotate on suspicion.
+- Platform-restrict client keys; monitor quotas (alerts at 80%).
+
+### 7.6 Acceptance Criteria (Keys)
+- Static scans confirm server key is absent from mobile/web bundles.
+- Client maps/Places work only from authorized package/bundle/referrers.
+- Backend travel-time requests succeed with `GMP_SERVER_KEY`; gracefully fall back to dummy on errors.
+
+
+## 8) Acceptance Criteria (Maps Integration)
+
+### Front-End
+1) Auto-detect origin if permission granted; otherwise manual pin required.
+2) Both origin & destination set before enabling save; Arabic validation messages shown on errors.
+3) Successful backend call returns travel minutes; UI displays computed **وقت الانطلاق** and **بدء الاستعداد** (12h Arabic).
+4) If backend returns `source="dummy"`, UI shows label **"زمن التنقل تقديري"**.
+
+### Back-End
+1) `/travel-time` responds within p50 ≤ 2.5s with `travel_duration_minutes>0` and `source`/`used_traffic` flags.
+2) Returns dummy fallback on Google 5xx/timeout/quota issues; logs correlation-id.
+3) Validates parameters; rejects identical points; never leaks keys.
+
+
+## 9) Test Cases (Maps)
+- Permission granted → auto origin, search destination → travel time > 0.
+- Permission denied → manual pins → travel time > 0.
+- Force Google error (mock/quota) → `source="dummy"`; UI shows تقديري.
+- Origin = destination → 400 from backend; client shows Arabic error.
+- Very short routes (<1min) → still compute & round minutes consistently.
+
+
+## 10) Out of Scope (for this document)
+- Non-maps app features (splash, theming, storage, notifications).
+- Calendar sync, multi-stop routing, non-driving modes.
+- User authentication/authorization policies (beyond key security).

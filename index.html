@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>مؤقتك</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="splashOverlay" class="splash-overlay">
+      <div class="splash-text">مع مؤقتك، توقيتك بيدك</div>
+    </div>
+
+    <header class="app-header">
+      <h1 class="app-title">مؤقتك</h1>
+      <button id="newAppointmentBtn" class="primary-btn with-icon" aria-label="موعد جديد">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+        <span>موعد جديد</span>
+      </button>
+    </header>
+
+    <main id="main">
+      <section id="emptyState" class="empty-state">
+        <p>أنشئ موعدك الآن</p>
+        <button id="createFromEmptyBtn" class="primary-btn">موعد جديد</button>
+      </section>
+
+      <section id="resultCard" class="result-card hidden" aria-live="polite">
+        <div class="result-time">
+          <div class="label">وقت المغادرة</div>
+          <div id="leaveTimeText" class="time-text">--:--</div>
+        </div>
+        <div class="result-details">
+          <div><span class="muted">إلى:</span> <span id="destLabel"></span></div>
+          <div><span class="muted">موعد الوصول:</span> <span id="arrivalLabel"></span></div>
+          <div><span class="muted">مدة الرحلة التقديرية:</span> <span id="travelLabel"></span></div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Appointment Modal -->
+    <div id="appointmentModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modalTitle">موعد جديد</h2>
+          <button class="icon-btn" id="closeModalBtn" aria-label="إغلاق">×</button>
+        </div>
+        <form id="appointmentForm" class="modal-body" novalidate>
+          <div class="field-group">
+            <label>الموقع الحالي</label>
+            <div class="map-select">
+              <button type="button" class="secondary-btn" id="pickOriginBtn">اختيار من الخريطة</button>
+              <div class="coords"><span id="originCoordsText">غير محدد</span></div>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label>الوجهة</label>
+            <div class="map-select">
+              <button type="button" class="secondary-btn" id="pickDestinationBtn">اختيار من الخريطة</button>
+              <div class="coords"><span id="destCoordsText">غير محدد</span></div>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="dateInput">تاريخ الموعد</label>
+              <input id="dateInput" type="date" required />
+            </div>
+            <div class="field">
+              <label for="timeInput">وقت الموعد</label>
+              <input id="timeInput" type="time" required />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="prepMinutes">مدة الاستعداد (بالدقائق)</label>
+              <input id="prepMinutes" type="number" inputmode="numeric" min="0" value="10" required />
+            </div>
+            <div class="field">
+              <label for="delayMinutes">وقت التأخير المتوقع (بالدقائق)</label>
+              <input id="delayMinutes" type="number" inputmode="numeric" min="0" value="5" required />
+            </div>
+          </div>
+
+          <div class="form-errors" id="formErrors" aria-live="polite"></div>
+
+          <div class="modal-footer">
+            <button type="submit" class="primary-btn">حفظ</button>
+          </div>
+
+          <input type="hidden" id="originLat" />
+          <input type="hidden" id="originLng" />
+          <input type="hidden" id="destLat" />
+          <input type="hidden" id="destLng" />
+        </form>
+      </div>
+    </div>
+
+    <!-- Map Picker (Dummy) -->
+    <div id="mapPicker" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="mapTitle">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="mapTitle">خريطة تجريبية</h2>
+          <button class="icon-btn" id="closeMapBtn" aria-label="إغلاق">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted">انقر على الخريطة لتحديد الموقع (بيانات وهمية)</p>
+          <div id="mapCanvas" class="map-canvas"></div>
+          <div class="coords">الإحداثيات: <span id="pickedCoords">—</span></div>
+          <div class="modal-footer">
+            <button id="confirmPickBtn" class="primary-btn" disabled>تأكيد الاختيار</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script defer src="app.js"></script>
+  </body>
+  </html>
+

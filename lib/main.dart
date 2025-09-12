@@ -768,6 +768,9 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
 
   final _prepCtrl = TextEditingController(text: '10');
   final _delayCtrl = TextEditingController(text: '5');
+  // Counter values for minutes (0..100)
+  int _prepMinutes = 10;
+  int _delayMinutes = 5;
   String? _error;
   String? _errPrep;
   String? _errDelay;
@@ -791,6 +794,8 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
       _labelCtrl.text = s.destLabel ?? '';
       _prepCtrl.text = s.prepMinutes.toString();
       _delayCtrl.text = s.delayMinutes.toString();
+      _prepMinutes = s.prepMinutes;
+      _delayMinutes = s.delayMinutes;
       final arriveLocal = utcToRiyadhLocal(s.arriveAtUtc);
       _dateLocal = DateTime(arriveLocal.year, arriveLocal.month, arriveLocal.day);
       _timeLocal = TimeOfDay(hour: arriveLocal.hour, minute: arriveLocal.minute);
@@ -798,6 +803,8 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
       final now = riyadhNowLocal();
       _dateLocal = DateTime(now.year, now.month, now.day);
       _timeLocal = TimeOfDay(hour: now.hour, minute: now.minute);
+      _prepMinutes = 10;
+      _delayMinutes = 5;
     }
   }
 
@@ -863,6 +870,9 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                         ],
                       ),
                     ),
+                    _origin == null
+                        ? const AppTag('غير محدد', icon: Icons.place_outlined)
+                        : AppTag('${_origin!.lat.toStringAsFixed(4)}, ${_origin!.lng.toStringAsFixed(4)}', icon: Icons.place_outlined),
                     OutlinedButton(
                       onPressed: _useCurrentLocation,
                       style: AppButtons.outline(),
@@ -875,9 +885,6 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                         ],
                       ),
                     ),
-                    _origin == null
-                        ? const AppTag('غير محدد', icon: Icons.place_outlined)
-                        : AppTag('${_origin!.lat.toStringAsFixed(4)}, ${_origin!.lng.toStringAsFixed(4)}', icon: Icons.place_outlined),
                   ],
                 ),
               ),
@@ -901,8 +908,8 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                       ),
                     ),
                     _destination == null
-                        ? const AppTag('غير محدد', icon: Icons.flag_outlined)
-                        : AppTag('${_destination!.lat.toStringAsFixed(4)}, ${_destination!.lng.toStringAsFixed(4)}', icon: Icons.flag_outlined),
+                        ? const AppTag('غير محدد', icon: Icons.place_outlined)
+                        : AppTag('${_destination!.lat.toStringAsFixed(4)}, ${_destination!.lng.toStringAsFixed(4)}', icon: Icons.place_outlined),
                   ],
                 ),
               ),
@@ -979,31 +986,14 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                   Expanded(
                     child: _fieldGroup(
                       label: 'مدة الاستعداد (بالدقائق)',
-                      child: TextField(
-                        controller: _prepCtrl,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        textAlign: TextAlign.right,
-                        textDirection: TextDirection.rtl,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
-                        decoration: InputDecoration(
-                          hintText: '0',
-                          errorText: _errPrep,
-                          filled: true,
-                          fillColor: AppColors.surfaceAlt,
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: AppColors.border),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-                          ),
-                        ),
+                      child: _minutesCounter(
+                        value: _prepMinutes,
+                        onChanged: (v) {
+                          setState(() {
+                            _prepMinutes = v.clamp(0, 100);
+                            _prepCtrl.text = _prepMinutes.toString();
+                          });
+                        },
                       ),
                     ),
                   ),
@@ -1011,31 +1001,14 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                   Expanded(
                     child: _fieldGroup(
                       label: 'وقت التأخير المتوقع (بالدقائق)',
-                      child: TextField(
-                        controller: _delayCtrl,
-                        keyboardType: TextInputType.number,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                        textAlign: TextAlign.right,
-                        textDirection: TextDirection.rtl,
-                        autocorrect: false,
-                        enableSuggestions: false,
-                        spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
-                        decoration: InputDecoration(
-                          hintText: '0',
-                          errorText: _errDelay,
-                          filled: true,
-                          fillColor: AppColors.surfaceAlt,
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          enabledBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: AppColors.border),
-                          ),
-                          focusedBorder: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-                          ),
-                        ),
+                      child: _minutesCounter(
+                        value: _delayMinutes,
+                        onChanged: (v) {
+                          setState(() {
+                            _delayMinutes = v.clamp(0, 100);
+                            _delayCtrl.text = _delayMinutes.toString();
+                          });
+                        },
                       ),
                     ),
                   ),
@@ -1049,11 +1022,18 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
-                child: ElevatedButton.icon(
+                child: ElevatedButton(
                   onPressed: _onSave,
                   style: AppButtons.primary(),
-                  icon: const Icon(Icons.check_circle_outline, size: 18),
-                  label: const Text('حفظ'),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text('حفظ'),
+                      SizedBox(width: 6),
+                      Icon(Icons.check_circle_outline, size: 18),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -1078,6 +1058,38 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
           child,
         ],
       ),
+    );
+  }
+
+  // Small counter control limited to 0..100 minutes
+  Widget _minutesCounter({required int value, required ValueChanged<int> onChanged}) {
+    final smallBtnStyle = OutlinedButton.styleFrom(
+      foregroundColor: Colors.white,
+      side: const BorderSide(color: AppColors.border),
+      padding: EdgeInsets.zero,
+      minimumSize: const Size(32, 32),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+    );
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        OutlinedButton(
+          onPressed: value <= 0 ? null : () => onChanged(value - 1),
+          style: smallBtnStyle,
+          child: const Icon(Icons.remove, size: 16),
+        ),
+        const SizedBox(width: 8),
+        AppTag(
+          '$value',
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        ),
+        const SizedBox(width: 8),
+        OutlinedButton(
+          onPressed: value >= 100 ? null : () => onChanged(value + 1),
+          style: smallBtnStyle,
+          child: const Icon(Icons.add, size: 16),
+        ),
+      ],
     );
   }
 

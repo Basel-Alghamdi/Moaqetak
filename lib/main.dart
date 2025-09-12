@@ -883,7 +883,10 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
               ),
               _fieldGroup(
                 label: 'الوجهة',
-                child: Row(
+                child: Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
                     ElevatedButton(
                       onPressed: () => _pickOnMap(false),
@@ -891,13 +894,12 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                       child: const Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.flag_outlined, size: 18),
+                          Icon(Icons.map_outlined, size: 18),
                           SizedBox(width: 6),
                           Text('اختيار من الخريطة'),
                         ],
                       ),
                     ),
-                    const SizedBox(width: 10),
                     _destination == null
                         ? const AppTag('غير محدد', icon: Icons.flag_outlined)
                         : AppTag('${_destination!.lat.toStringAsFixed(4)}, ${_destination!.lng.toStringAsFixed(4)}', icon: Icons.flag_outlined),

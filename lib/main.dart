@@ -1246,6 +1246,23 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
   late ll.LatLng _mapCenter;
   double _mapZoom = 12;
 
+  // POIs (Places) state
+  final List<_PoiCat> _poiCats = const [
+    _PoiCat(key: 'all', label: 'الكل', color: Color(0xFF9CA3AF), icon: Icons.place_outlined),
+    _PoiCat(key: 'restaurant', label: 'مطاعم', color: Color(0xFFf59e0b), icon: Icons.restaurant),
+    _PoiCat(key: 'cafe', label: 'مقاهي', color: Color(0xFF10b981), icon: Icons.local_cafe),
+    _PoiCat(key: 'shop', label: 'متاجر', color: Color(0xFF3b82f6), icon: Icons.storefront),
+    _PoiCat(key: 'pharmacy', label: 'صيدليات', color: Color(0xFFef4444), icon: Icons.local_pharmacy),
+    _PoiCat(key: 'hospital', label: 'مستشفيات', color: Color(0xFF8b5cf6), icon: Icons.local_hospital),
+    _PoiCat(key: 'fuel', label: 'وقود', color: Color(0xFF22c55e), icon: Icons.local_gas_station),
+  ];
+  String _selectedPoiCat = 'all';
+  List<_Poi> _pois = [];
+  _Poi? _selectedPoi;
+  bool _poiLoading = false;
+  String? _poiError;
+  Timer? _poiDebounce;
+
   @override
   void initState() {
     super.initState();
@@ -1254,6 +1271,8 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
     _mapCenter = _defaultCenter;
     _mapZoom = 12;
     _maybeGetLocation();
+    // Initial POIs fetch once the dialog opens
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scheduleFetchPois());
   }
 
   Future<void> _maybeGetLocation() async {
@@ -1319,6 +1338,7 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                               _mapZoom = evt.camera.zoom;
                             });
                           } catch (_) {}
+                          _scheduleFetchPois();
                         },
                       ),
                       children: [
@@ -1327,6 +1347,21 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                           subdomains: const ['a','b','c'],
                           userAgentPackageName: 'com.example.moaqetak',
                         ),
+                        // POIs markers layer
+                        MarkerLayer(markers: [
+                          for (final p in _pois)
+                            Marker(
+                              point: ll.LatLng(p.lat, p.lon),
+                              width: 36,
+                              height: 36,
+                              child: GestureDetector(
+                                onTap: () {
+                                  setState(() { _selectedPoi = p; });
+                                },
+                                child: _PoiMarker(color: p.color ?? _catByKey(p.cat)?.color ?? const Color(0xFF9CA3AF)),
+                              ),
+                            ),
+                        ]),
                         MarkerLayer(markers: [
                           if (_other != null)
                             Marker(
@@ -1369,6 +1404,43 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                                       icon: const Icon(Icons.search),
                                       onPressed: () => _runSearch(_searchCtrl.text),
                                     ),
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          // POI category chips
+                          SizedBox(
+                            height: 40,
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              itemCount: _poiCats.length,
+                              separatorBuilder: (_, __) => const SizedBox(width: 6),
+                              itemBuilder: (context, i) {
+                                final c = _poiCats[i];
+                                final sel = c.key == _selectedPoiCat;
+                                return ChoiceChip(
+                                  selected: sel,
+                                  onSelected: (_) {
+                                    setState(() {
+                                      _selectedPoiCat = c.key;
+                                      _selectedPoi = null;
+                                    });
+                                    _scheduleFetchPois(immediate: true);
+                                  },
+                                  label: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(c.icon, size: 16, color: sel ? Colors.black : c.color),
+                                      const SizedBox(width: 6),
+                                      Text(c.label),
+                                    ],
+                                  ),
+                                  labelStyle: const TextStyle(fontSize: 12),
+                                  selectedColor: c.color.withOpacity(0.9),
+                                  backgroundColor: const Color(0xFF111827),
+                                  side: const BorderSide(color: Color(0xFF2A3243)),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                );
+                              },
                             ),
                           ),
                           if (_searchError != null)
@@ -1446,6 +1518,42 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                         ],
                       ),
                     ),
+
+                    // Selected POI quick action bar (bottom center)
+                    if (_selectedPoi != null)
+                      Positioned(
+                        bottom: 10,
+                        left: 60,
+                        right: 60,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF111827),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF2A3243)),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(width: 10, height: 10, decoration: BoxDecoration(color: _selectedPoi!.color ?? _catByKey(_selectedPoi!.cat)?.color ?? const Color(0xFF9CA3AF), shape: BoxShape.circle)),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(_selectedPoi!.name ?? 'مكان بدون اسم', maxLines: 1, overflow: TextOverflow.ellipsis)),
+                              const SizedBox(width: 8),
+                              TextButton(
+                                onPressed: () {
+                                  final p = ll.LatLng(_selectedPoi!.lat, _selectedPoi!.lon);
+                                  setState(() { _active = p; });
+                                  try { _mapController.move(p, 17); } catch (_) {}
+                                },
+                                child: const Text('اختيار'),
+                              ),
+                              IconButton(
+                                onPressed: () => setState(() { _selectedPoi = null; }),
+                                icon: const Icon(Icons.close, size: 18),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -1534,6 +1642,119 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
       });
     }
   }
+
+  // === POIs fetching via Overpass API ===
+  void _scheduleFetchPois({bool immediate = false}) {
+    _poiDebounce?.cancel();
+    if (immediate) {
+      _fetchPois();
+      return;
+    }
+    _poiDebounce = Timer(const Duration(milliseconds: 700), _fetchPois);
+  }
+
+  int _radiusForZoom(double z) {
+    final zz = z.isNaN ? 12.0 : z;
+    if (zz >= 16) return 500;
+    if (zz >= 15) return 800;
+    if (zz >= 14) return 1200;
+    if (zz >= 13) return 2000;
+    return 3000;
+  }
+
+  _PoiCat? _catByKey(String? key) => _poiCats.firstWhere((c) => c.key == key, orElse: () => const _PoiCat(key: 'all', label: 'الكل', color: Color(0xFF9CA3AF), icon: Icons.place_outlined));
+
+  String _buildOverpassQuery(double lat, double lon, int radius, String cat) {
+    String filters;
+    if (cat == 'restaurant') {
+      filters = 'nwr(around:$radius,$lat,$lon)[amenity=restaurant];';
+    } else if (cat == 'cafe') {
+      filters = 'nwr(around:$radius,$lat,$lon)[amenity=cafe];';
+    } else if (cat == 'pharmacy') {
+      filters = 'nwr(around:$radius,$lat,$lon)[amenity=pharmacy];';
+    } else if (cat == 'hospital') {
+      filters = 'nwr(around:$radius,$lat,$lon)[amenity~"^(hospital|clinic)\$"];';
+    } else if (cat == 'fuel') {
+      filters = 'nwr(around:$radius,$lat,$lon)[amenity=fuel];';
+    } else if (cat == 'shop') {
+      filters = 'nwr(around:$radius,$lat,$lon)[shop];';
+    } else {
+      filters = 'nwr(around:$radius,$lat,$lon)[amenity~"^(restaurant|cafe|fast_food|pharmacy|hospital|clinic|fuel)\$"];nwr(around:$radius,$lat,$lon)[shop];';
+    }
+    return "[out:json][timeout:25];(" + filters + ")out center 100;";
+  }
+
+  Future<void> _fetchPois() async {
+    // Avoid heavy loads at far zooms
+    if ((_mapZoom.isNaN ? 12.0 : _mapZoom) < 12) return;
+    final lat = _mapCenter.latitude;
+    final lon = _mapCenter.longitude;
+    final radius = _radiusForZoom(_mapZoom);
+    final q = _buildOverpassQuery(lat, lon, radius, _selectedPoiCat);
+    setState(() {
+      _poiLoading = true;
+      _poiError = null;
+    });
+    try {
+      final uri = Uri.parse('https://overpass-api.de/api/interpreter');
+      final resp = await http.post(
+        uri,
+        headers: {'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Moaqetak/1.0 (contact@example.com)'},
+        body: 'data=' + Uri.encodeComponent(q),
+      );
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body) as Map<String, dynamic>;
+        final List els = (data['elements'] as List? ?? []);
+        final List<_Poi> pois = [];
+        for (final e in els) {
+          final m = e as Map<String, dynamic>;
+          final tags = (m['tags'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? <String, String>{};
+          double? plat;
+          double? plon;
+          if (m['lat'] != null && m['lon'] != null) {
+            final la = (m['lat'] as num).toDouble();
+            final lo = (m['lon'] as num).toDouble();
+            plat = la; plon = lo;
+          } else if (m['center'] != null) {
+            final c = m['center'] as Map<String, dynamic>;
+            final la = (c['lat'] as num?)?.toDouble();
+            final lo = (c['lon'] as num?)?.toDouble();
+            if (la != null && lo != null) { plat = la; plon = lo; }
+          }
+          if (plat == null || plon == null) continue;
+          final name = tags['name:ar'] ?? tags['name'] ?? '';
+          String cat = _selectedPoiCat;
+          Color? color;
+          if (tags.containsKey('amenity')) {
+            final a = tags['amenity']!;
+            if (a == 'restaurant') { cat = 'restaurant'; color = _catByKey(cat)?.color; }
+            else if (a == 'cafe') { cat = 'cafe'; color = _catByKey(cat)?.color; }
+            else if (a == 'pharmacy') { cat = 'pharmacy'; color = _catByKey(cat)?.color; }
+            else if (a == 'hospital' || a == 'clinic') { cat = 'hospital'; color = _catByKey(cat)?.color; }
+            else if (a == 'fuel') { cat = 'fuel'; color = _catByKey(cat)?.color; }
+          } else if (tags.containsKey('shop')) {
+            cat = 'shop'; color = _catByKey(cat)?.color;
+          }
+          pois.add(_Poi(lat: plat, lon: plon, name: name.isEmpty ? null : name, tags: tags, cat: cat, color: color));
+          if (pois.length >= 150) break; // limit to avoid clutter
+        }
+        setState(() {
+          _pois = pois;
+          _poiLoading = false;
+        });
+      } else {
+        setState(() {
+          _poiLoading = false;
+          _poiError = 'تعذر جلب الأماكن (${resp.statusCode})';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _poiLoading = false;
+        _poiError = 'حدث خطأ أثناء الاتصال بالخدمة';
+      });
+    }
+  }
 }
 
 // البيانات والمنطق
@@ -1563,6 +1784,47 @@ class _ZoomBtn extends StatelessWidget {
       child: Icon(icon, size: 20),
     );
   }
+}
+
+class _PoiMarker extends StatelessWidget {
+  final Color color;
+  const _PoiMarker({required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(shape: BoxShape.circle),
+      alignment: Alignment.center,
+      child: Container(
+        width: 18,
+        height: 18,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 1),
+          boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 2, spreadRadius: 0.5)],
+        ),
+      ),
+    );
+  }
+}
+
+class _PoiCat {
+  final String key;
+  final String label;
+  final Color color;
+  final IconData icon;
+  const _PoiCat({required this.key, required this.label, required this.color, required this.icon});
+}
+
+class _Poi {
+  final double lat;
+  final double lon;
+  final String? name;
+  final Map<String, String> tags;
+  final String cat;
+  final Color? color;
+  const _Poi({required this.lat, required this.lon, this.name, required this.tags, required this.cat, this.color});
 }
 
 class LatLng {

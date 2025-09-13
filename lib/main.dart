@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -12,6 +13,7 @@ import 'travel_time_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
+import 'package:http/http.dart' as http;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1232,12 +1234,25 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
   ll.LatLng? _active;
   ll.LatLng? _other;
   bool _locTried = false;
+  final MapController _mapController = MapController();
+
+  // Search state
+  final TextEditingController _searchCtrl = TextEditingController();
+  List<_SearchResult> _searchResults = [];
+  bool _searching = false;
+  String? _searchError;
+
+  // Track camera state for zoom controls
+  late ll.LatLng _mapCenter;
+  double _mapZoom = 12;
 
   @override
   void initState() {
     super.initState();
     _active = widget.initial == null ? null : ll.LatLng(widget.initial!.lat, widget.initial!.lng);
     _other = widget.other == null ? null : ll.LatLng(widget.other!.lat, widget.other!.lng);
+    _mapCenter = _defaultCenter;
+    _mapZoom = 12;
     _maybeGetLocation();
   }
 
@@ -1283,36 +1298,154 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
               height: 360,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: FlutterMap(
-                  options: MapOptions(
-                    initialCenter: _defaultCenter,
-                    initialZoom: 12,
-                    onTap: (tapPos, point) {
-                      setState(() => _active = point);
-                    },
-                  ),
+                child: Stack(
                   children: [
-                    TileLayer(
-                      urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      subdomains: const ['a','b','c'],
-                      userAgentPackageName: 'com.example.moaqetak',
+                    FlutterMap(
+                      mapController: _mapController,
+                      options: MapOptions(
+                        initialCenter: _defaultCenter,
+                        initialZoom: 12,
+                        onTap: (tapPos, point) {
+                          setState(() {
+                            _active = point;
+                            _mapCenter = point;
+                          });
+                        },
+                        onMapEvent: (evt) {
+                          // Update camera state for zoom buttons
+                          try {
+                            setState(() {
+                              _mapCenter = evt.camera.center;
+                              _mapZoom = evt.camera.zoom;
+                            });
+                          } catch (_) {}
+                        },
+                      ),
+                      children: [
+                        TileLayer(
+                          urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          subdomains: const ['a','b','c'],
+                          userAgentPackageName: 'com.example.moaqetak',
+                        ),
+                        MarkerLayer(markers: [
+                          if (_other != null)
+                            Marker(
+                              point: _other!,
+                              width: 36,
+                              height: 36,
+                              child: const Icon(Icons.location_on, color: Color(0xFF60A5FA), size: 36),
+                            ),
+                          if (_active != null)
+                            Marker(
+                              point: _active!,
+                              width: 38,
+                              height: 38,
+                              child: Icon(Icons.location_on, color: activeColor, size: 38),
+                            ),
+                        ]),
+                      ],
                     ),
-                    MarkerLayer(markers: [
-                      if (_other != null)
-                        Marker(
-                          point: _other!,
-                          width: 36,
-                          height: 36,
-                          child: const Icon(Icons.location_on, color: Color(0xFF60A5FA), size: 36),
-                        ),
-                      if (_active != null)
-                        Marker(
-                          point: _active!,
-                          width: 38,
-                          height: 38,
-                          child: Icon(Icons.location_on, color: activeColor, size: 38),
-                        ),
-                    ]),
+
+                    // Search box overlay (top)
+                    Positioned(
+                      top: 10,
+                      left: 10,
+                      right: 10,
+                      child: Column(
+                        children: [
+                          TextField(
+                            controller: _searchCtrl,
+                            textInputAction: TextInputAction.search,
+                            onSubmitted: (q) => _runSearch(q),
+                            decoration: InputDecoration(
+                              hintText: 'ابحث عن شارع، حي، أو مكان',
+                              suffixIcon: _searching
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(10.0),
+                                      child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                                    )
+                                  : IconButton(
+                                      tooltip: 'بحث',
+                                      icon: const Icon(Icons.search),
+                                      onPressed: () => _runSearch(_searchCtrl.text),
+                                    ),
+                            ),
+                          ),
+                          if (_searchError != null)
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsetsDirectional.fromSTEB(12, 8, 12, 8),
+                              margin: const EdgeInsets.only(top: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2A3243),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(_searchError!, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            ),
+                          if (_searchResults.isNotEmpty)
+                            Container(
+                              width: double.infinity,
+                              constraints: const BoxConstraints(maxHeight: 180),
+                              margin: const EdgeInsets.only(top: 6),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF111827),
+                                border: Border.all(color: const Color(0xFF2A3243)),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: ListView.separated(
+                                padding: EdgeInsets.zero,
+                                itemCount: _searchResults.length,
+                                separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFF2A3243)),
+                                itemBuilder: (context, i) {
+                                  final r = _searchResults[i];
+                                  return ListTile(
+                                    dense: true,
+                                    title: Text(r.displayName, maxLines: 2, overflow: TextOverflow.ellipsis),
+                                    onTap: () {
+                                      final p = ll.LatLng(r.lat, r.lon);
+                                      setState(() {
+                                        _active = p;
+                                        _mapCenter = p;
+                                        _searchResults = [];
+                                      });
+                                      try {
+                                        _mapController.move(p, 16);
+                                      } catch (_) {}
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+
+                    // Zoom controls (bottom left)
+                    Positioned(
+                      bottom: 10,
+                      left: 10,
+                      child: Column(
+                        children: [
+                          _ZoomBtn(
+                            icon: Icons.add,
+                            onPressed: () {
+                              final double z = (_mapZoom.isNaN ? 12.0 : _mapZoom) + 1.0;
+                              try { _mapController.move(_mapCenter, z); } catch (_) {}
+                              setState(() => _mapZoom = z);
+                            },
+                          ),
+                          const SizedBox(height: 8),
+                          _ZoomBtn(
+                            icon: Icons.remove,
+                            onPressed: () {
+                              final double z = (_mapZoom.isNaN ? 12.0 : _mapZoom) - 1.0;
+                              try { _mapController.move(_mapCenter, z); } catch (_) {}
+                              setState(() => _mapZoom = z);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1341,9 +1474,97 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
       ),
     );
   }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _runSearch(String query) async {
+    final q = query.trim();
+    if (q.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _searchError = null;
+      });
+      return;
+    }
+    setState(() {
+      _searching = true;
+      _searchError = null;
+    });
+    try {
+      final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+        'format': 'json',
+        'addressdetails': '1',
+        'limit': '8',
+        'q': q,
+      });
+      final resp = await http.get(
+        uri,
+        headers: {
+          'User-Agent': 'Moaqetak/1.0 (contact@example.com)',
+        },
+      );
+      if (resp.statusCode == 200) {
+        final List data = json.decode(resp.body) as List;
+        final results = data.take(8).map((e) {
+          final lat = double.tryParse(e['lat']?.toString() ?? '');
+          final lon = double.tryParse(e['lon']?.toString() ?? '');
+          final name = (e['display_name'] ?? '').toString();
+          return (lat != null && lon != null)
+              ? _SearchResult(lat: lat, lon: lon, displayName: name)
+              : null;
+        }).whereType<_SearchResult>().toList();
+        setState(() {
+          _searchResults = results;
+          _searching = false;
+        });
+      } else {
+        setState(() {
+          _searching = false;
+          _searchError = 'فشل البحث (${resp.statusCode})';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _searching = false;
+        _searchError = 'تعذر الاتصال بالخدمة';
+      });
+    }
+  }
 }
 
 // البيانات والمنطق
+class _SearchResult {
+  final double lat;
+  final double lon;
+  final String displayName;
+  const _SearchResult({required this.lat, required this.lon, required this.displayName});
+}
+
+class _ZoomBtn extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onPressed;
+  const _ZoomBtn({required this.icon, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        padding: EdgeInsets.zero,
+        minimumSize: const Size(40, 40),
+        backgroundColor: const Color(0xFF111827),
+        foregroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10), side: const BorderSide(color: Color(0xFF2A3243))),
+      ),
+      onPressed: onPressed,
+      child: Icon(icon, size: 20),
+    );
+  }
+}
+
 class LatLng {
   final double lat;
   final double lng;

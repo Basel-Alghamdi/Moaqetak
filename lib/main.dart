@@ -10,6 +10,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
 import 'travel_time_service.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart' as ll;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1096,7 +1098,11 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
   Future<void> _pickOnMap(bool isOrigin) async {
     final picked = await showDialog<LatLng>(
       context: context,
-      builder: (_) => const _DummyMapPicker(),
+      builder: (_) => _OSMMapPicker(
+        initial: isOrigin ? _origin : _destination,
+        other: isOrigin ? _destination : _origin,
+        isOrigin: isOrigin,
+      ),
     );
     if (picked != null) {
       setState(() {
@@ -1212,37 +1218,49 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
   }
 }
 
-class _DummyMapPicker extends StatefulWidget {
-  const _DummyMapPicker();
+class _OSMMapPicker extends StatefulWidget {
+  final LatLng? initial; // active pin (origin or destination)
+  final LatLng? other; // the other pin to display for context
+  final bool isOrigin; // true if picking origin
+  const _OSMMapPicker({this.initial, this.other, required this.isOrigin});
 
   @override
-  State<_DummyMapPicker> createState() => _DummyMapPickerState();
+  State<_OSMMapPicker> createState() => _OSMMapPickerState();
 }
 
-class _DummyMapPickerState extends State<_DummyMapPicker> {
-  Offset? _tapPos;
+class _OSMMapPickerState extends State<_OSMMapPicker> {
+  ll.LatLng? _active;
+  ll.LatLng? _other;
+  bool _locTried = false;
 
-  static const double latMin = 16.0;
-  static const double latMax = 32.0;
-  static const double lngMin = 34.0;
-  static const double lngMax = 56.0;
-
-  LatLng? get _pickedLatLng {
-    if (_tapPos == null) return null;
-    final box = _boxSize;
-    if (box == null) return null;
-    final pxX = (_tapPos!.dx / box.width).clamp(0.0, 1.0);
-    final pxY = (_tapPos!.dy / box.height).clamp(0.0, 1.0);
-    final lat = latMax - (latMax - latMin) * pxY;
-    final lng = lngMin + (lngMax - lngMin) * pxX;
-    return LatLng(lat, lng);
+  @override
+  void initState() {
+    super.initState();
+    _active = widget.initial == null ? null : ll.LatLng(widget.initial!.lat, widget.initial!.lng);
+    _other = widget.other == null ? null : ll.LatLng(widget.other!.lat, widget.other!.lng);
+    _maybeGetLocation();
   }
 
-  Size? _boxSize;
+  Future<void> _maybeGetLocation() async {
+    if (widget.isOrigin && _active == null && !_locTried) {
+      _locTried = true;
+      try {
+        bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        if (!serviceEnabled) return;
+        LocationPermission p = await Geolocator.checkPermission();
+        if (p == LocationPermission.denied) p = await Geolocator.requestPermission();
+        if (p == LocationPermission.denied || p == LocationPermission.deniedForever) return;
+        final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high, timeLimit: const Duration(seconds: 10));
+        setState(() { _active = ll.LatLng(pos.latitude, pos.longitude); });
+      } catch (_) {}
+    }
+  }
+
+  ll.LatLng get _defaultCenter => _active ?? _other ?? ll.LatLng(24.7136, 46.6753); // Riyadh
 
   @override
   Widget build(BuildContext context) {
-    final picked = _pickedLatLng;
+    final activeColor = widget.isOrigin ? const Color(0xFF22C55E) : const Color(0xFFEF4444);
     return Dialog(
       backgroundColor: const Color(0xFF151922),
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
@@ -1254,92 +1272,75 @@ class _DummyMapPickerState extends State<_DummyMapPicker> {
           children: [
             Row(
               children: [
-                const Expanded(child: Text('خريطة تجريبية', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
+                Expanded(child: Text(widget.isOrigin ? 'اختيار الموقع الحالي' : 'اختيار الوجهة', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600))),
                 IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
               ],
             ),
             const SizedBox(height: 8),
-            const Text('انقر على الخريطة لتحديد الموقع (بيانات وهمية)', style: TextStyle(color: Colors.white70)),
+            const Text('اضغط على الخريطة لوضع المؤشر. يمكنك التحريك والتقريب.', style: TextStyle(color: Colors.white70)),
             const SizedBox(height: 8),
-            LayoutBuilder(
-              builder: (context, constraints) {
-                _boxSize = Size(constraints.maxWidth, 220);
-                return GestureDetector(
-                  onTapDown: (d) => setState(() => _tapPos = d.localPosition),
-                  child: Container(
-                    height: 220,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0E1320),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFF2A3243)),
-                      boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 14, offset: Offset(0, 6))],
-                    ),
-                    child: CustomPaint(
-                      painter: _GridPainter(marker: _tapPos),
-                      child: const SizedBox.expand(),
-                    ),
+            SizedBox(
+              height: 360,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: FlutterMap(
+                  options: MapOptions(
+                    initialCenter: _defaultCenter,
+                    initialZoom: 12,
+                    onTap: (tapPos, point) {
+                      setState(() => _active = point);
+                    },
                   ),
-                );
-              },
+                  children: [
+                    TileLayer(
+                      urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      subdomains: const ['a','b','c'],
+                      userAgentPackageName: 'com.example.moaqetak',
+                    ),
+                    MarkerLayer(markers: [
+                      if (_other != null)
+                        Marker(
+                          point: _other!,
+                          width: 36,
+                          height: 36,
+                          child: const Icon(Icons.location_on, color: Color(0xFF60A5FA), size: 36),
+                        ),
+                      if (_active != null)
+                        Marker(
+                          point: _active!,
+                          width: 38,
+                          height: 38,
+                          child: Icon(Icons.location_on, color: activeColor, size: 38),
+                        ),
+                    ]),
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 10),
             Text(
-              picked == null
+              _active == null
                   ? 'الإحداثيات: —'
-                  : 'الإحداثيات: خط العرض ${picked.lat.toStringAsFixed(4)}، خط الطول ${picked.lng.toStringAsFixed(4)}',
+                  : 'الإحداثيات: ${_active!.latitude.toStringAsFixed(5)}, ${_active!.longitude.toStringAsFixed(5)}',
               style: const TextStyle(color: Colors.white70),
+              textDirection: TextDirection.rtl,
             ),
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 ElevatedButton(
-                  onPressed: picked == null ? null : () => Navigator.of(context).pop(picked),
+                  onPressed: _active == null ? null : () => Navigator.of(context).pop(LatLng(_active!.latitude, _active!.longitude)),
                   style: AppButtons.primary(),
                   child: const Text('تأكيد الاختيار'),
                 ),
               ],
-            )
+            ),
           ],
         ),
       ),
     );
   }
-}
-
-class _GridPainter extends CustomPainter {
-  final Offset? marker;
-  const _GridPainter({this.marker});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = const Color(0xFF111827);
-    canvas.drawRect(Offset.zero & size, bg);
-
-    final gridPaint = Paint()
-      ..color = const Color(0xFF2A3243)
-      ..strokeWidth = 1;
-    const step = 24.0;
-    for (double x = 0; x <= size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-    for (double y = 0; y <= size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-
-    if (marker != null) {
-      final circle = Paint()..color = const Color(0xFF22C55E);
-      canvas.drawCircle(marker!, 6, circle);
-      final ring = Paint()
-        ..color = const Color(0xFF22C55E).withOpacity(0.15)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 8;
-      canvas.drawCircle(marker!, 12, ring);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _GridPainter oldDelegate) => oldDelegate.marker != marker;
 }
 
 // البيانات والمنطق

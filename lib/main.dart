@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'ui.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -12,11 +13,25 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
 import 'package:http/http.dart' as http;
+import 'package:animated_text_kit/animated_text_kit.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  assert(() {
+    debugPaintSizeEnabled = false;
+    debugPaintBaselinesEnabled = false;
+    debugPaintPointersEnabled = false;
+    debugRepaintRainbowEnabled = false;
+    return true;
+  }());
   await Hive.initFlutter();
   await Hive.openBox('appointments');
+  await Hive.openBox('app_meta');
+  await Hive.openBox('settings');
+  // Enable runtime font fetching so iOS/Android emulators pull Tajawal
+  // without needing pre-bundled assets.
+  GoogleFonts.config.allowRuntimeFetching = true;
   runApp(const MowaqetakApp());
 }
 
@@ -31,7 +46,9 @@ class MowaqetakApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         title: 'مؤقتك',
         themeMode: ThemeMode.dark,
-        theme: ThemeData.dark().copyWith(
+        theme: ThemeData(
+          brightness: Brightness.dark,
+          fontFamily: GoogleFonts.tajawal().fontFamily,
           colorScheme: const ColorScheme.dark(
             primary: Color(0xFF3B82F6),
             surface: Color(0xFF151922),
@@ -48,8 +65,8 @@ class MowaqetakApp extends StatelessWidget {
             selectionColor: Color(0x553B82F6),
             selectionHandleColor: Color(0xFF3B82F6),
           ),
-          // Keep default text sizes to avoid apply() assertion on null fontSize
-          textTheme: ThemeData.dark().textTheme,
+          // Professional Arabic font across the app (taller display)
+          textTheme: GoogleFonts.tajawalTextTheme(ThemeData.dark().textTheme),
           inputDecorationTheme: InputDecorationTheme(
             filled: true,
             fillColor: const Color(0xFF111827),
@@ -100,16 +117,56 @@ class _HomeScreenState extends State<HomeScreen> {
     Future.delayed(const Duration(milliseconds: 1200), () {
       if (mounted) setState(() => _showSplash = false);
     });
-    // Load saved appointments from Hive
+    // Bootstrap data: migrate if needed, then load
+    Future.microtask(_bootstrapData);
+  }
+
+  Future<void> _bootstrapData() async {
+    await _maybeMigrateUtcV1();
     final box = Hive.box('appointments');
+    final List<AppointmentState> loaded = [];
     for (var i = 0; i < box.length; i++) {
       final item = box.getAt(i);
       if (item is Map) {
         try {
-          _appointments.add(AppointmentState.fromMap(Map<String, dynamic>.from(item)));
+          loaded.add(AppointmentState.fromMap(Map<String, dynamic>.from(item)));
         } catch (_) {}
       }
     }
+    if (!mounted) return;
+    setState(() {
+      _appointments
+        ..clear()
+        ..addAll(loaded);
+    });
+  }
+
+  Future<void> _maybeMigrateUtcV1() async {
+    final meta = Hive.box('app_meta');
+    final migrated = meta.get('migrated_utc_v1') == true;
+    if (migrated) return;
+    final box = Hive.box('appointments');
+    for (var i = 0; i < box.length; i++) {
+      final item = box.getAt(i);
+      if (item is Map && item['arriveAtUtc'] is num && item['leaveAtUtc'] is num) {
+        final m = Map<String, dynamic>.from(item);
+        int a = (m['arriveAtUtc'] as num).toInt();
+        int l = (m['leaveAtUtc'] as num).toInt();
+        // Reinterpret stored epoch as device-local wall clock and treat it as UTC wall clock.
+        DateTime relabelAsUtc(int ms) {
+          final asLocal = DateTime.fromMillisecondsSinceEpoch(ms, isUtc: false);
+          return DateTime.utc(asLocal.year, asLocal.month, asLocal.day, asLocal.hour, asLocal.minute, asLocal.second, asLocal.millisecond, asLocal.microsecond);
+        }
+        final fixedA = relabelAsUtc(a).millisecondsSinceEpoch;
+        final fixedL = relabelAsUtc(l).millisecondsSinceEpoch;
+        if (fixedA != a || fixedL != l) {
+          m['arriveAtUtc'] = fixedA;
+          m['leaveAtUtc'] = fixedL;
+          await box.putAt(i, m);
+        }
+      }
+    }
+    await meta.put('migrated_utc_v1', true);
   }
 
   @override
@@ -121,17 +178,22 @@ class _HomeScreenState extends State<HomeScreen> {
             centerTitle: false,
             title: const Text('مؤقتك', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
             leading: null,
-            actions: [
-              Padding(
-                padding: const EdgeInsetsDirectional.only(end: 8.0),
-                child: ElevatedButton.icon(
-                  onPressed: _openNewAppointment,
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('موعد جديد'),
-                  style: AppButtons.primary(),
-                ),
+          actions: [
+            Padding(
+              padding: const EdgeInsetsDirectional.only(end: 8.0),
+              child: ElevatedButton.icon(
+                onPressed: _openNewAppointment,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('موعد جديد'),
+                style: AppButtons.primary(),
               ),
-            ],
+            ),
+            IconButton(
+              tooltip: 'الإعدادات',
+              onPressed: _openSettings,
+              icon: const Icon(Icons.settings_outlined),
+            ),
+          ],
           ),
           body: SafeArea(
             child: Padding(
@@ -150,55 +212,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
         ),
-        if (_showSplash)
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topRight,
-                end: Alignment.bottomLeft,
-                colors: [Color(0xFF0B0D11), Color(0xFF0F1422)],
-              ),
-            ),
-            alignment: Alignment.center,
-            child: TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0.8, end: 1),
-              curve: Curves.easeOutBack,
-              duration: const Duration(milliseconds: 600),
-              builder: (context, scale, child) => Opacity(
-                opacity: scale.clamp(0.0, 1.0),
-                child: Transform.scale(scale: scale, child: child),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 88,
-                    height: 88,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF111827),
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(color: Colors.black.withOpacity(0.4), blurRadius: 20, offset: const Offset(0, 8)),
-                      ],
-                      border: Border.all(color: const Color(0xFF2A3243)),
-                    ),
-                    child: const Center(
-                      child: Icon(Icons.timelapse, size: 44, color: Color(0xFF3B82F6)),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text('مؤقتك', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 6),
-                  const Text('تنظيم مواعيدك بذكاء', style: TextStyle(color: Colors.white70)),
-                  const SizedBox(height: 16),
-                  const SizedBox(
-                    width: 140,
-                    child: LinearProgressIndicator(minHeight: 4, color: Color(0xFF3B82F6), backgroundColor: Color(0xFF2A3243)),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        if (_showSplash) const _SplashView(),
       ],
     );
   }
@@ -232,6 +246,11 @@ class _HomeScreenState extends State<HomeScreen> {
       box.deleteAt(i);
     }
     setState(() => _appointments.removeAt(i));
+  }
+
+  Future<void> _openSettings() async {
+    await showDialog(context: context, builder: (_) => const _SettingsDialog());
+    setState(() {}); // refresh to reflect any theme-ish changes if needed
   }
 }
 
@@ -295,18 +314,25 @@ class _ResultCard extends StatelessWidget {
             _infoRow('موعد الوصول:', formatFullArabic(arriveLocal)),
             _infoRow('مدة الرحلة التقديرية:', '${state.travelMinutes} دقيقة${state.travelSource == 'haversine' || state.travelSource == 'dummy' ? ' (تقديري)' : ''}'),
             const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                OutlinedButton.icon(
+            FittedBox(
+              alignment: Alignment.centerRight,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  OutlinedButton.icon(
                   onPressed: () async {
                     final local = utcToRiyadhLocal(state.leaveAtUtc);
                     final text = 'وقت المغادرة: ${formatTime12Arabic(local)} — ${formatDateArabic(local)}';
                     await Clipboard.setData(ClipboardData(text: text));
-                    // ignore: use_build_context_synchronously
+                    if (!context.mounted) return;
                     showSnack(context, 'تم نسخ وقت المغادرة');
                   },
-                  style: AppButtons.outline(),
+                  style: AppButtons.outline().copyWith(
+                    side: const WidgetStatePropertyAll(BorderSide(color: AppColors.success)),
+                    foregroundColor: WidgetStatePropertyAll(AppColors.success),
+                    padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 8)),
+                    minimumSize: const WidgetStatePropertyAll(Size(0, 34)),
+                  ),
                   icon: const Icon(Icons.copy, size: 18),
                   label: const Text('نسخ وقت المغادرة'),
                 ),
@@ -314,19 +340,30 @@ class _ResultCard extends StatelessWidget {
                 if (onEdit != null)
                   OutlinedButton.icon(
                     onPressed: onEdit,
-                    style: AppButtons.outline(),
+                    style: AppButtons.outline().copyWith(
+                      side: const WidgetStatePropertyAll(BorderSide(color: AppColors.primary)),
+                      foregroundColor: const WidgetStatePropertyAll(AppColors.primary),
+                      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 8)),
+                      minimumSize: const WidgetStatePropertyAll(Size(0, 34)),
+                    ),
                     icon: const Icon(Icons.edit, size: 18),
                     label: const Text('تعديل'),
                   ),
-                const SizedBox(width: 8),
+                if (onDelete != null) const SizedBox(width: 8),
                 if (onDelete != null)
                   OutlinedButton.icon(
                     onPressed: onDelete,
-                    style: AppButtons.outline(),
+                    style: AppButtons.outline().copyWith(
+                      side: const WidgetStatePropertyAll(BorderSide(color: AppColors.danger)),
+                      foregroundColor: const WidgetStatePropertyAll(Colors.redAccent),
+                      padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 8)),
+                      minimumSize: const WidgetStatePropertyAll(Size(0, 34)),
+                    ),
                     icon: const Icon(Icons.delete_outline, size: 18),
                     label: const Text('حذف'),
                   ),
-              ],
+                ],
+              ),
             ),
           ],
         ),
@@ -375,8 +412,7 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
   int _prepMinutes = 10;
   int _delayMinutes = 5;
   String? _error;
-  String? _errPrep;
-  String? _errDelay;
+  // numeric validation errors are surfaced via _error banner
   final _labelCtrl = TextEditingController();
 
   @override
@@ -434,7 +470,7 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                   children: [
                     Container(
                       decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.12),
+                        color: AppColors.primary.withValues(alpha: 0.12),
                         shape: BoxShape.circle,
                       ),
                       padding: const EdgeInsets.all(8),
@@ -530,11 +566,11 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                             const Icon(Icons.calendar_today_outlined, size: 18),
                             const SizedBox(width: 6),
                             Text(formatDateArabic(_dateLocal)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
+                  ],
+                ),
+              ),
+            ),
+          ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: _fieldGroup(
@@ -603,7 +639,7 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
                   const SizedBox(width: 12),
                   Expanded(
                     child: _fieldGroup(
-                      label: 'وقت التأخير المتوقع (بالدقائق)',
+                      label: 'التأخير المتوقع (بالدقائق)',
                       child: _minutesCounter(
                         value: _delayMinutes,
                         onChanged: (v) {
@@ -673,26 +709,32 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
       minimumSize: const Size(32, 32),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
     );
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        OutlinedButton(
-          onPressed: value <= 0 ? null : () => onChanged(value - 1),
-          style: smallBtnStyle,
-          child: const Icon(Icons.remove, size: 16),
+    // Force LTR inside control to keep [-][value][+] order in RTL UI
+    // and give a unified width for consistent alignment between fields.
+    return Directionality(
+      textDirection: TextDirection.ltr,
+      child: SizedBox(
+        width: 140,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            OutlinedButton(
+              onPressed: value <= 0 ? null : () => onChanged(value - 1),
+              style: smallBtnStyle,
+              child: const Icon(Icons.remove, size: 16),
+            ),
+            AppTag(
+              '$value',
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            ),
+            OutlinedButton(
+              onPressed: value >= 100 ? null : () => onChanged(value + 1),
+              style: smallBtnStyle,
+              child: const Icon(Icons.add, size: 16),
+            ),
+          ],
         ),
-        const SizedBox(width: 8),
-        AppTag(
-          '$value',
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-        ),
-        const SizedBox(width: 8),
-        OutlinedButton(
-          onPressed: value >= 100 ? null : () => onChanged(value + 1),
-          style: smallBtnStyle,
-          child: const Icon(Icons.add, size: 16),
-        ),
-      ],
+      ),
     );
   }
 
@@ -767,17 +809,17 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
   }
 
   Future<void> _onSave() async {
-    setState(() { _error = null; _errPrep = null; _errDelay = null; });
+    setState(() { _error = null; });
     if (_origin == null || _destination == null) {
       setState(() => _error = 'يرجى تحديد الموقع والوجهة من الخريطة.');
       return;
     }
     final prep = _parseNonNegInt(_prepCtrl.text, -1);
     final delay = _parseNonNegInt(_delayCtrl.text, -1);
-    bool ok = true;
-    if (prep < 0) { _errPrep = 'أدخل رقمًا صحيحًا'; ok = false; }
-    if (delay < 0) { _errDelay = 'أدخل رقمًا صحيحًا'; ok = false; }
-    if (!ok) { setState(() {}); return; }
+    if (prep < 0 || delay < 0) {
+      setState(() { _error = 'أدخل أرقامًا صحيحة لمدة الاستعداد والتأخير'; });
+      return;
+    }
 
     final arriveLocal = DateTime(
       _dateLocal.year, _dateLocal.month, _dateLocal.day, _timeLocal.hour, _timeLocal.minute,
@@ -809,6 +851,7 @@ class _AppointmentDialogState extends State<_AppointmentDialog> {
       travelSource: travelRes.source,
     );
 
+    if (!mounted) return;
     Navigator.of(context).pop(state);
   }
 
@@ -859,7 +902,7 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
   List<_Poi> _pois = [];
   _Poi? _selectedPoi;
   bool _poiLoading = false;
-  String? _poiError;
+  // Silent failure: no error banner shown for POIs
   Timer? _poiDebounce;
 
   @override
@@ -942,8 +985,7 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                       ),
                       children: [
                         TileLayer(
-                          urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          subdomains: const ['a','b','c'],
+                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                           userAgentPackageName: 'com.example.moaqetak',
                         ),
                         // POIs markers layer
@@ -1034,7 +1076,7 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                                     ],
                                   ),
                                   labelStyle: const TextStyle(fontSize: 12),
-                                  selectedColor: c.color.withOpacity(0.9),
+                                  selectedColor: c.color.withValues(alpha: 0.9),
                                   backgroundColor: const Color(0xFF111827),
                                   side: const BorderSide(color: Color(0xFF2A3243)),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -1117,6 +1159,20 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
                         ],
                       ),
                     ),
+
+                    // Loading indicator for POIs (top right)
+                    if (_poiLoading)
+                      const Positioned(
+                        top: 12,
+                        right: 12,
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+
+                    // Error banner for POIs removed per request (silent failures)
 
                     // Selected POI quick action bar (bottom center)
                     if (_selectedPoi != null)
@@ -1280,7 +1336,7 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
     } else {
       filters = 'nwr(around:$radius,$lat,$lon)[amenity~"^(restaurant|cafe|fast_food|pharmacy|hospital|clinic|fuel)\$"];nwr(around:$radius,$lat,$lon)[shop];';
     }
-    return "[out:json][timeout:25];(" + filters + ")out center 100;";
+    return "[out:json][timeout:25];($filters);out center 100;";
   }
 
   Future<void> _fetchPois() async {
@@ -1292,14 +1348,13 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
     final q = _buildOverpassQuery(lat, lon, radius, _selectedPoiCat);
     setState(() {
       _poiLoading = true;
-      _poiError = null;
     });
     try {
       final uri = Uri.parse('https://overpass-api.de/api/interpreter');
       final resp = await http.post(
         uri,
         headers: {'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'Moaqetak/1.0 (contact@example.com)'},
-        body: 'data=' + Uri.encodeComponent(q),
+        body: 'data=${Uri.encodeComponent(q)}',
       );
       if (resp.statusCode == 200) {
         final data = json.decode(resp.body) as Map<String, dynamic>;
@@ -1342,16 +1397,10 @@ class _OSMMapPickerState extends State<_OSMMapPicker> {
           _poiLoading = false;
         });
       } else {
-        setState(() {
-          _poiLoading = false;
-          _poiError = 'تعذر جلب الأماكن (${resp.statusCode})';
-        });
+        setState(() { _poiLoading = false; });
       }
     } catch (e) {
-      setState(() {
-        _poiLoading = false;
-        _poiError = 'حدث خطأ أثناء الاتصال بالخدمة';
-      });
+      setState(() { _poiLoading = false; });
     }
   }
 }
@@ -1538,4 +1587,302 @@ String formatFullArabic(DateTime local) {
   };
   final dow = days[local.weekday] ?? '';
   return '$dow ${formatDateArabic(local)} ${formatTime12Arabic(local)}';
+}
+
+class _SettingsDialog extends StatefulWidget {
+  const _SettingsDialog();
+  @override
+  State<_SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<_SettingsDialog> {
+  late bool _online;
+  late TextEditingController _googleKey;
+  late TextEditingController _hereKey;
+  late TextEditingController _mapboxKey;
+  String _provider = 'google';
+
+  @override
+  void initState() {
+    super.initState();
+    final box = Hive.box('settings');
+    _online = box.get('online_traffic_enabled') == true;
+    _googleKey = TextEditingController(text: (box.get('google_api_key') as String?) ?? '');
+    _hereKey = TextEditingController(text: (box.get('here_api_key') as String?) ?? '');
+    _mapboxKey = TextEditingController(text: (box.get('mapbox_access_token') as String?) ?? '');
+    _provider = (box.get('traffic_provider') as String?) ?? 'google';
+  }
+
+  @override
+  void dispose() {
+    _googleKey.dispose();
+    _hereKey.dispose();
+    _mapboxKey.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: AppColors.surface,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.settings_outlined),
+                const SizedBox(width: 8),
+                const Expanded(child: Text('الإعدادات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Divider(color: AppColors.border),
+            const SizedBox(height: 10),
+            SwitchListTile.adaptive(
+              value: _online,
+              title: const Text('استخدام حركة المرور المباشرة'),
+              subtitle: const Text('يتطلب مفتاح API مفعّل الفوترة. في حال عدم التفعيل سيتم استخدام تقدير محلي.'),
+              onChanged: (v) => setState(() => _online = v),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: _online
+                  ? Column(
+                      key: const ValueKey('g'),
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('المزوّد'),
+                        const SizedBox(height: 6),
+                        DropdownButtonFormField<String>(
+                          value: _provider,
+                          items: const [
+                            DropdownMenuItem(value: 'google', child: Text('Google Distance Matrix')),
+                            DropdownMenuItem(value: 'here', child: Text('HERE Routing v8')),
+                            DropdownMenuItem(value: 'mapbox', child: Text('Mapbox Directions Traffic')),
+                          ],
+                          onChanged: (v) => setState(() => _provider = v ?? 'google'),
+                        ),
+                        const SizedBox(height: 10),
+                        if (_provider == 'google') ...[
+                          const Text('Google API Key'),
+                          const SizedBox(height: 6),
+                          TextField(
+                            controller: _googleKey,
+                            obscureText: true,
+                            enableSuggestions: false,
+                            autocorrect: false,
+                            decoration: const InputDecoration(hintText: 'AIza...'),
+                          ),
+                        ] else if (_provider == 'here') ...[
+                          const Text('HERE API Key'),
+                          const SizedBox(height: 6),
+                          TextField(
+                            controller: _hereKey,
+                            obscureText: true,
+                            enableSuggestions: false,
+                            autocorrect: false,
+                            decoration: const InputDecoration(hintText: 'hereapikey...'),
+                          ),
+                        ] else ...[
+                          const Text('Mapbox Access Token'),
+                          const SizedBox(height: 6),
+                          TextField(
+                            controller: _mapboxKey,
+                            obscureText: true,
+                            enableSuggestions: false,
+                            autocorrect: false,
+                            decoration: const InputDecoration(hintText: 'pk.eyJ...'),
+                          ),
+                        ],
+                      ],
+                    )
+                  : const SizedBox.shrink(),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('إلغاء')),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: _onSave,
+                  style: AppButtons.primary(),
+                  child: const Text('حفظ'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _onSave() async {
+    final box = Hive.box('settings');
+    await box.put('online_traffic_enabled', _online);
+    await box.put('traffic_provider', _provider);
+    await box.put('google_api_key', _googleKey.text.trim());
+    await box.put('here_api_key', _hereKey.text.trim());
+    await box.put('mapbox_access_token', _mapboxKey.text.trim());
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+}
+
+class _SplashView extends StatefulWidget {
+  const _SplashView();
+
+  @override
+  State<_SplashView> createState() => _SplashViewState();
+}
+
+class _SplashViewState extends State<_SplashView> with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _a1;
+  late final Animation<double> _a2;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 6))..repeat(reverse: true);
+    _a1 = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+    _a2 = CurvedAnimation(parent: _ctrl, curve: const Interval(0.2, 1.0, curve: Curves.easeInOut));
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topRight,
+          end: Alignment.bottomLeft,
+          colors: [Color(0xFF0B0D11), Color(0xFF0F1422)],
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Stack(
+        children: [
+          // Soft animated blobs
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _a1,
+              builder: (_, __) {
+                final t1 = (_a1.value - 0.5) * 2; // -1..1
+                final t2 = (_a2.value - 0.5) * 2;
+                return Stack(
+                  children: [
+                    _blob(Offset(120 * t1, -60 * t2), const Color(0xFF1B2130), 220),
+                    _blob(Offset(-140 * t2, 80 * t1), const Color(0xFF0F172A), 260),
+                    _blob(Offset(40 * t2, 120 * t1), const Color(0xFF111827), 200),
+                  ],
+                );
+              },
+            ),
+          ),
+          // Content
+          Align(
+            alignment: Alignment.center,
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0.9, end: 1),
+              duration: const Duration(milliseconds: 700),
+              curve: Curves.easeOutBack,
+              builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 108,
+                    height: 108,
+                    decoration: BoxDecoration(
+                      gradient: const RadialGradient(colors: [Color(0xFF1F2937), Color(0xFF0F141F)]),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 30, offset: const Offset(0, 14)),
+                        const BoxShadow(color: Color(0x553B82F6), blurRadius: 20, spreadRadius: 2),
+                      ],
+                      border: Border.all(color: const Color(0xFF2A3243)),
+                    ),
+                    child: Center(
+                      child: Image.asset(
+                        'assets/images/app_logo.png',
+                        width: 72,
+                        height: 72,
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, __, ___) => const Icon(Icons.timelapse, size: 50, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    'مؤقتك',
+                    style: GoogleFonts.tajawal(
+                      fontSize: 34,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.white,
+                      decoration: TextDecoration.none,
+                      height: 1.25,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    height: 34,
+                    child: DefaultTextStyle(
+                      style: GoogleFonts.tajawal(
+                        color: Colors.white70,
+                        fontSize: 18,
+                        height: 1.35,
+                        decoration: TextDecoration.none,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      child: AnimatedTextKit(
+                        isRepeatingAnimation: true,
+                        repeatForever: true,
+                        animatedTexts: [
+                          FadeAnimatedText('تنظيم مواعيدك بذكاء', duration: const Duration(milliseconds: 1400)),
+                          FadeAnimatedText('حساب وقت المغادرة بدقة', duration: const Duration(milliseconds: 1400)),
+                          FadeAnimatedText('محلي بالكامل — بدون إنترنت', duration: const Duration(milliseconds: 1400)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // Progress bar removed for a cleaner splash appearance
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _blob(Offset offset, Color color, double size) {
+    return Align(
+      alignment: Alignment.center,
+      child: Transform.translate(
+        offset: offset,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.6),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(color: color.withValues(alpha: 0.35), blurRadius: 50, spreadRadius: 10),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -3,9 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'firebase_options.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'ui.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/services.dart';
@@ -17,31 +15,8 @@ import 'package:http/http.dart' as http;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  bool inited = false;
-  // Try with explicit options first
-  try {
-    if (Firebase.apps.isEmpty) {
-      final opts = DefaultFirebaseOptions.maybeCurrentPlatform;
-      if (opts != null) {
-        await Firebase.initializeApp(options: opts);
-      }
-    }
-    inited = Firebase.apps.isNotEmpty;
-  } catch (_) {
-    // Fallback: try default init (uses google-services/plist if present)
-    try {
-      if (Firebase.apps.isEmpty) {
-        await Firebase.initializeApp();
-      }
-      inited = Firebase.apps.isNotEmpty;
-    } catch (_) {
-      inited = false;
-    }
-  }
-
-  if (inited) {
-    try { await FirebaseAuth.instance.setLanguageCode('ar'); } catch (_) {}
-  }
+  await Hive.initFlutter();
+  await Hive.openBox('appointments');
   runApp(const MowaqetakApp());
 }
 
@@ -117,8 +92,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   bool _showSplash = true;
   final List<AppointmentState> _appointments = [];
-  User? _user;
-  StreamSubscription<User?>? _authSub;
 
   @override
   void initState() {
@@ -127,12 +100,15 @@ class _HomeScreenState extends State<HomeScreen> {
     Future.delayed(const Duration(milliseconds: 1200), () {
       if (mounted) setState(() => _showSplash = false);
     });
-    // Subscribe to auth state only if Firebase is initialized
-    if (Firebase.apps.isNotEmpty) {
-      _authSub = FirebaseAuth.instance.authStateChanges().listen((u) {
-        if (!mounted) return;
-        setState(() => _user = u);
-      });
+    // Load saved appointments from Hive
+    final box = Hive.box('appointments');
+    for (var i = 0; i < box.length; i++) {
+      final item = box.getAt(i);
+      if (item is Map) {
+        try {
+          _appointments.add(AppointmentState.fromMap(Map<String, dynamic>.from(item)));
+        } catch (_) {}
+      }
     }
   }
 
@@ -143,35 +119,7 @@ class _HomeScreenState extends State<HomeScreen> {
         Scaffold(
           appBar: AppBar(
             centerTitle: false,
-            title: _user == null
-                ? OutlinedButton(
-                    onPressed: _openAuth,
-                    style: AppButtons.outline(),
-                    child: const Text('تسجيل الدخول', style: TextStyle(fontSize: 16)),
-                  )
-                : Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.account_circle, size: 20, color: Colors.white70),
-                      const SizedBox(width: 6),
-                      Text(
-                        _displayName(_user!),
-                        style: const TextStyle(fontSize: 15),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: _signOut,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: const BorderSide(color: Color(0xFF2A3243)),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: const Text('تسجيل الخروج'),
-                      ),
-                    ],
-                  ),
+            title: const Text('مؤقتك', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
             leading: null,
             actions: [
               Padding(
@@ -257,7 +205,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    _authSub?.cancel();
     super.dispose();
   }
 
@@ -268,36 +215,23 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => _AppointmentDialog(initial: initial),
     );
     if (result != null) {
-      setState(() {
-        if (index != null && index >= 0 && index < _appointments.length) {
-          _appointments[index] = result;
-        } else {
-          _appointments.add(result);
-        }
-      });
+      final box = Hive.box('appointments');
+      if (index != null && index >= 0 && index < _appointments.length) {
+        await box.putAt(index, result.toMap());
+        setState(() => _appointments[index] = result);
+      } else {
+        await box.add(result.toMap());
+        setState(() => _appointments.add(result));
+      }
     }
   }
 
-  Future<void> _openAuth() async {
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => const _AuthDialog(),
-    );
-  }
-
-  Future<void> _signOut() async {
-    await AuthService.instance.signOut();
-  }
-
   void _deleteAppointment(int i) {
+    final box = Hive.box('appointments');
+    if (i >= 0 && i < box.length) {
+      box.deleteAt(i);
+    }
     setState(() => _appointments.removeAt(i));
-  }
-
-  String _displayName(User user) {
-    return user.displayName?.trim().isNotEmpty == true
-        ? user.displayName!.trim()
-        : (user.email ?? 'مستخدم');
   }
 }
 
@@ -327,342 +261,7 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _AuthDialog extends StatefulWidget {
-  const _AuthDialog();
-
-  @override
-  State<_AuthDialog> createState() => _AuthDialogState();
-}
-
-class _AuthDialogState extends State<_AuthDialog> {
-  bool _isLogin = true;
-  String? _error;
-  bool _busy = false;
-
-  // Login controllers
-  final _loginEmail = TextEditingController();
-  final _loginPass = TextEditingController();
-  String? _errLoginEmail;
-  String? _errLoginPass;
-
-  // Register controllers
-  final _firstName = TextEditingController();
-  final _lastName = TextEditingController();
-  final _regEmail = TextEditingController();
-  final _regPass = TextEditingController();
-  final _regPassConfirm = TextEditingController();
-  String? _errFirst;
-  String? _errLast;
-  String? _errRegEmail;
-  String? _errRegPass;
-  String? _errRegConfirm;
-
-  @override
-  void dispose() {
-    _loginEmail.dispose();
-    _loginPass.dispose();
-    _firstName.dispose();
-    _lastName.dispose();
-    _regEmail.dispose();
-    _regPass.dispose();
-    _regPassConfirm.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: AppColors.surface,
-      surfaceTintColor: Colors.transparent,
-      elevation: 12,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: AppColors.border),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560),
-        child: Padding(
-          padding: const EdgeInsets.all(20.0),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 250),
-                  child: Firebase.apps.isEmpty
-                      ? const Padding(
-                          padding: EdgeInsets.only(bottom: 12.0),
-                          child: AppBanner.error(
-                            'لم يتم تهيئة Firebase. يرجى إعداد مفاتيح المشروع أولاً.\n(flutterfire configure أو ملفات GoogleService)'
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
-                Row(
-                  children: [
-                    Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.primary.withOpacity(0.12),
-                        shape: BoxShape.circle,
-                      ),
-                      padding: const EdgeInsets.all(8),
-                      child: const Icon(Icons.lock_outline, color: Colors.white, size: 18),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _isLogin ? 'تسجيل الدخول' : 'إنشاء حساب جديد',
-                        textAlign: TextAlign.right,
-                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      icon: const Icon(Icons.close),
-                      tooltip: 'إغلاق',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                const Divider(color: AppColors.border, height: 1),
-                const SizedBox(height: 12),
-                if (_isLogin) _buildLoginForm() else _buildRegisterForm(),
-                const SizedBox(height: 10),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(_error ?? '', style: const TextStyle(color: Colors.redAccent)),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    TextButton(
-                      onPressed: () => setState(() => _isLogin = !_isLogin),
-                      child: Text(_isLogin ? 'إنشاء حساب جديد' : 'لديك حساب؟ تسجيل الدخول'),
-                    ),
-                    ElevatedButton(
-                      onPressed: (_busy || Firebase.apps.isEmpty)
-                          ? null
-                          : (_isLogin ? _onLogin : _onRegister),
-                      style: AppButtons.primary(),
-                      child: _busy
-                          ? const SizedBox(
-                              height: 18,
-                              width: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
-                          : Text(_isLogin ? 'تسجيل الدخول' : 'إنشاء الحساب'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLoginForm() {
-    return Column(
-      children: [
-        _labeledField('البريد الإلكتروني', _loginEmail, keyboard: TextInputType.emailAddress, prefix: const Icon(Icons.alternate_email, size: 18), errorText: _errLoginEmail),
-        _labeledField('كلمة المرور', _loginPass, obscure: true, enableVisibilityToggle: true, prefix: const Icon(Icons.lock_outline, size: 18), errorText: _errLoginPass),
-      ],
-    );
-  }
-
-  Widget _buildRegisterForm() {
-    return Column(
-      children: [
-        _labeledField('الاسم الأول', _firstName, prefix: const Icon(Icons.person_outline, size: 18), errorText: _errFirst),
-        _labeledField('اسم العائلة', _lastName, prefix: const Icon(Icons.person_outline, size: 18), errorText: _errLast),
-        _labeledField('البريد الإلكتروني الشخصي', _regEmail, keyboard: TextInputType.emailAddress, prefix: const Icon(Icons.alternate_email, size: 18), errorText: _errRegEmail),
-        _labeledField('كلمة المرور', _regPass, obscure: true, enableVisibilityToggle: true, prefix: const Icon(Icons.lock_outline, size: 18), errorText: _errRegPass),
-        _labeledField('تأكيد كلمة المرور', _regPassConfirm, obscure: true, enableVisibilityToggle: true, prefix: const Icon(Icons.lock_outline, size: 18), errorText: _errRegConfirm),
-      ],
-    );
-  }
-
-  bool _loginPassHidden = true;
-  bool _regPassHidden = true;
-  bool _regPassConfirmHidden = true;
-
-  Widget _labeledField(String label, TextEditingController ctrl,
-      {bool obscure = false, TextInputType? keyboard, bool enableVisibilityToggle = false, Widget? prefix, String? errorText}) {
-    bool isConfirm = identical(ctrl, _regPassConfirm);
-    bool isLoginPass = identical(ctrl, _loginPass);
-    bool isRegPass = identical(ctrl, _regPass);
-    bool hidden = obscure && (isConfirm ? _regPassConfirmHidden : (isLoginPass ? _loginPassHidden : (isRegPass ? _regPassHidden : true)));
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6.0),
-            child: Text(label, style: const TextStyle(color: Colors.white70)),
-          ),
-          TextField(
-            controller: ctrl,
-            obscureText: obscure ? hidden : false,
-            keyboardType: keyboard,
-            textAlign: TextAlign.right,
-            textDirection: TextDirection.rtl,
-            autocorrect: false,
-            enableSuggestions: false,
-            spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
-            decoration: InputDecoration(
-              filled: true,
-              fillColor: AppColors.surfaceAlt,
-              hintText: '',
-              errorText: errorText,
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: AppColors.border),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: AppColors.primary, width: 1.5),
-              ),
-              prefixIcon: prefix == null
-                  ? null
-                  : Padding(
-                      padding: const EdgeInsetsDirectional.only(start: 8.0, end: 4.0),
-                      child: prefix,
-                    ),
-              suffixIcon: enableVisibilityToggle
-                  ? IconButton(
-                      tooltip: hidden ? 'إظهار' : 'إخفاء',
-                      onPressed: () => setState(() {
-                        if (isConfirm) {
-                          _regPassConfirmHidden = !_regPassConfirmHidden;
-                        } else if (isLoginPass) {
-                          _loginPassHidden = !_loginPassHidden;
-                        } else if (isRegPass) {
-                          _regPassHidden = !_regPassHidden;
-                        }
-                      }),
-                      icon: Icon(hidden ? Icons.visibility : Icons.visibility_off),
-                    )
-                  : null,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _onLogin() async {
-    setState(() { _error = null; _busy = true; _errLoginEmail = null; _errLoginPass = null; });
-    final email = _loginEmail.text.trim();
-    final pass = _loginPass.text;
-    bool ok = true;
-    if (email.isEmpty || !_isEmail(email)) { _errLoginEmail = 'أدخل بريدًا إلكترونيًا صالحًا'; ok = false; }
-    if (pass.isEmpty) { _errLoginPass = 'أدخل كلمة المرور'; ok = false; }
-    if (!ok) { setState(() { _busy = false; }); return; }
-    try {
-      await AuthService.instance.signIn(email: email, password: pass);
-      if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      setState(() => _error = _authErrorMessage(e, login: true));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _onRegister() async {
-    setState(() { _error = null; _busy = true; _errFirst = _errLast = _errRegEmail = _errRegPass = _errRegConfirm = null; });
-    final first = _firstName.text.trim();
-    final last = _lastName.text.trim();
-    final email = _regEmail.text.trim();
-    final pass = _regPass.text;
-    final confirm = _regPassConfirm.text;
-    bool ok = true;
-    if (first.isEmpty) { _errFirst = 'الاسم الأول مطلوب'; ok = false; }
-    if (last.isEmpty) { _errLast = 'اسم العائلة مطلوب'; ok = false; }
-    if (email.isEmpty || !_isEmail(email)) { _errRegEmail = 'أدخل بريدًا إلكترونيًا صالحًا'; ok = false; }
-    if (pass.length < 6) { _errRegPass = 'كلمة المرور لا تقل عن 6 أحرف'; ok = false; }
-    if (confirm != pass) { _errRegConfirm = 'كلمتا المرور غير متطابقتين'; ok = false; }
-    if (!ok) { setState(() { _busy = false; }); return; }
-    try {
-      await AuthService.instance.register(firstName: first, lastName: last, email: email, password: pass);
-      if (mounted) Navigator.of(context).pop();
-    } catch (e) {
-      setState(() => _error = _authErrorMessage(e, login: false));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  bool _isEmail(String v) => RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v);
-
-  String _authErrorMessage(Object e, {required bool login}) {
-    if (e is FirebaseAuthException) {
-      switch (e.code) {
-        case 'user-not-found':
-          return 'لا يوجد مستخدم مسجل بهذا البريد.';
-        case 'wrong-password':
-          return 'كلمة المرور غير صحيحة.';
-        case 'invalid-email':
-          return 'البريد الإلكتروني غير صالح.';
-        case 'user-disabled':
-          return 'تم تعطيل هذا الحساب.';
-        case 'email-already-in-use':
-          return 'البريد الإلكتروني مستخدم مسبقًا.';
-        case 'weak-password':
-          return 'كلمة المرور ضعيفة. اختر كلمة أقوى.';
-        case 'operation-not-allowed':
-          return 'نوع التسجيل غير مفعّل في المشروع.';
-        default:
-          return login ? 'تعذر تسجيل الدخول: ${e.message ?? e.code}' : 'تعذر إنشاء الحساب: ${e.message ?? e.code}';
-      }
-    }
-    return login ? 'تعذر تسجيل الدخول: $e' : 'تعذر إنشاء الحساب: $e';
-  }
-}
-
-class AuthService {
-  AuthService._();
-  static final AuthService instance = AuthService._();
-
-  bool get isReady => Firebase.apps.isNotEmpty;
-
-  Future<void> signIn({required String email, required String password}) async {
-    if (!isReady) {
-      throw StateError('Firebase is not initialized');
-    }
-    final auth = FirebaseAuth.instance;
-    await auth.signInWithEmailAndPassword(email: email, password: password);
-  }
-
-  Future<void> register({
-    required String firstName,
-    required String lastName,
-    required String email,
-    required String password,
-  }) async {
-    if (!isReady) {
-      throw StateError('Firebase is not initialized');
-    }
-    final auth = FirebaseAuth.instance;
-    final cred = await auth.createUserWithEmailAndPassword(email: email, password: password);
-    if (cred.user != null) {
-      await cred.user!.updateDisplayName('$firstName $lastName');
-      try { await cred.user!.sendEmailVerification(); } catch (_) {}
-    }
-  }
-
-  Future<void> signOut() async {
-    if (!isReady) return;
-    await FirebaseAuth.instance.signOut();
-  }
-}
+// Auth UI and Firebase integration removed — local-only app
 
 class _ResultCard extends StatelessWidget {
   final AppointmentState state;
@@ -1854,6 +1453,30 @@ class AppointmentState {
     required this.delayMinutes,
     this.travelSource,
   });
+
+  Map<String, dynamic> toMap() => {
+        'origin': {'lat': origin.lat, 'lng': origin.lng},
+        'destination': {'lat': destination.lat, 'lng': destination.lng},
+        'destLabel': destLabel,
+        'arriveAtUtc': arriveAtUtc.toUtc().millisecondsSinceEpoch,
+        'leaveAtUtc': leaveAtUtc.toUtc().millisecondsSinceEpoch,
+        'travelMinutes': travelMinutes,
+        'prepMinutes': prepMinutes,
+        'delayMinutes': delayMinutes,
+        'travelSource': travelSource,
+      };
+
+  static AppointmentState fromMap(Map<String, dynamic> m) => AppointmentState(
+        origin: LatLng((m['origin']?['lat'] as num).toDouble(), (m['origin']?['lng'] as num).toDouble()),
+        destination: LatLng((m['destination']?['lat'] as num).toDouble(), (m['destination']?['lng'] as num).toDouble()),
+        destLabel: (m['destLabel'] as String?) ?? 'الوجهة المحددة',
+        arriveAtUtc: DateTime.fromMillisecondsSinceEpoch((m['arriveAtUtc'] as num).toInt(), isUtc: true),
+        leaveAtUtc: DateTime.fromMillisecondsSinceEpoch((m['leaveAtUtc'] as num).toInt(), isUtc: true),
+        travelMinutes: (m['travelMinutes'] as num).toInt(),
+        prepMinutes: (m['prepMinutes'] as num).toInt(),
+        delayMinutes: (m['delayMinutes'] as num).toInt(),
+        travelSource: m['travelSource'] as String?,
+      );
 }
 
 double haversineKm(LatLng a, LatLng b) {
@@ -1875,9 +1498,18 @@ int estimateTravelMinutes(LatLng origin, LatLng dest) {
 }
 
 // توقيت مكة (UTC+3) بدون DST
+// Use UTC math to avoid device timezone side-effects when persisting.
 DateTime riyadhNowLocal() => DateTime.now().toUtc().add(const Duration(hours: 3));
-DateTime riyadhLocalToUtc(DateTime local) => local.subtract(const Duration(hours: 3));
-DateTime utcToRiyadhLocal(DateTime utc) => utc.add(const Duration(hours: 3));
+DateTime riyadhLocalToUtc(DateTime local) {
+  final asUtc = DateTime.utc(
+    local.year, local.month, local.day, local.hour, local.minute, local.second, local.millisecond, local.microsecond,
+  );
+  return asUtc.subtract(const Duration(hours: 3));
+}
+DateTime utcToRiyadhLocal(DateTime utc) {
+  final u = utc.toUtc();
+  return u.add(const Duration(hours: 3));
+}
 
 String twoDigits(int n) => n.toString().padLeft(2, '0');
 

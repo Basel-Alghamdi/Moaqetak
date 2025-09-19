@@ -188,11 +188,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: AppButtons.primary(),
               ),
             ),
-            IconButton(
-              tooltip: 'الإعدادات',
-              onPressed: _openSettings,
-              icon: const Icon(Icons.settings_outlined),
-            ),
           ],
           ),
           body: SafeArea(
@@ -234,8 +229,18 @@ class _HomeScreenState extends State<HomeScreen> {
         await box.putAt(index, result.toMap());
         setState(() => _appointments[index] = result);
       } else {
+        // Insert new appointment at the top (index 0) and reorder Hive box accordingly
+        final List<Map<String, dynamic>> existing = [];
+        for (var i = 0; i < box.length; i++) {
+          final m = box.getAt(i);
+          if (m is Map) existing.add(Map<String, dynamic>.from(m.cast<String, dynamic>()));
+        }
+        await box.clear();
         await box.add(result.toMap());
-        setState(() => _appointments.add(result));
+        if (existing.isNotEmpty) {
+          await box.addAll(existing);
+        }
+        setState(() => _appointments.insert(0, result));
       }
     }
   }
@@ -248,10 +253,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => _appointments.removeAt(i));
   }
 
-  Future<void> _openSettings() async {
-    await showDialog(context: context, builder: (_) => const _SettingsDialog());
-    setState(() {}); // refresh to reflect any theme-ish changes if needed
-  }
 }
 
 class _EmptyState extends StatelessWidget {
@@ -1589,150 +1590,7 @@ String formatFullArabic(DateTime local) {
   return '$dow ${formatDateArabic(local)} ${formatTime12Arabic(local)}';
 }
 
-class _SettingsDialog extends StatefulWidget {
-  const _SettingsDialog();
-  @override
-  State<_SettingsDialog> createState() => _SettingsDialogState();
-}
-
-class _SettingsDialogState extends State<_SettingsDialog> {
-  late bool _online;
-  late TextEditingController _googleKey;
-  late TextEditingController _hereKey;
-  late TextEditingController _mapboxKey;
-  String _provider = 'google';
-
-  @override
-  void initState() {
-    super.initState();
-    final box = Hive.box('settings');
-    _online = box.get('online_traffic_enabled') == true;
-    _googleKey = TextEditingController(text: (box.get('google_api_key') as String?) ?? '');
-    _hereKey = TextEditingController(text: (box.get('here_api_key') as String?) ?? '');
-    _mapboxKey = TextEditingController(text: (box.get('mapbox_access_token') as String?) ?? '');
-    _provider = (box.get('traffic_provider') as String?) ?? 'google';
-  }
-
-  @override
-  void dispose() {
-    _googleKey.dispose();
-    _hereKey.dispose();
-    _mapboxKey.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: AppColors.surface,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.settings_outlined),
-                const SizedBox(width: 8),
-                const Expanded(child: Text('الإعدادات', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
-                IconButton(onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close)),
-              ],
-            ),
-            const SizedBox(height: 8),
-            const Divider(color: AppColors.border),
-            const SizedBox(height: 10),
-            SwitchListTile.adaptive(
-              value: _online,
-              title: const Text('استخدام حركة المرور المباشرة'),
-              subtitle: const Text('يتطلب مفتاح API مفعّل الفوترة. في حال عدم التفعيل سيتم استخدام تقدير محلي.'),
-              onChanged: (v) => setState(() => _online = v),
-            ),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              child: _online
-                  ? Column(
-                      key: const ValueKey('g'),
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('المزوّد'),
-                        const SizedBox(height: 6),
-                        DropdownButtonFormField<String>(
-                          value: _provider,
-                          items: const [
-                            DropdownMenuItem(value: 'google', child: Text('Google Distance Matrix')),
-                            DropdownMenuItem(value: 'here', child: Text('HERE Routing v8')),
-                            DropdownMenuItem(value: 'mapbox', child: Text('Mapbox Directions Traffic')),
-                          ],
-                          onChanged: (v) => setState(() => _provider = v ?? 'google'),
-                        ),
-                        const SizedBox(height: 10),
-                        if (_provider == 'google') ...[
-                          const Text('Google API Key'),
-                          const SizedBox(height: 6),
-                          TextField(
-                            controller: _googleKey,
-                            obscureText: true,
-                            enableSuggestions: false,
-                            autocorrect: false,
-                            decoration: const InputDecoration(hintText: 'AIza...'),
-                          ),
-                        ] else if (_provider == 'here') ...[
-                          const Text('HERE API Key'),
-                          const SizedBox(height: 6),
-                          TextField(
-                            controller: _hereKey,
-                            obscureText: true,
-                            enableSuggestions: false,
-                            autocorrect: false,
-                            decoration: const InputDecoration(hintText: 'hereapikey...'),
-                          ),
-                        ] else ...[
-                          const Text('Mapbox Access Token'),
-                          const SizedBox(height: 6),
-                          TextField(
-                            controller: _mapboxKey,
-                            obscureText: true,
-                            enableSuggestions: false,
-                            autocorrect: false,
-                            decoration: const InputDecoration(hintText: 'pk.eyJ...'),
-                          ),
-                        ],
-                      ],
-                    )
-                  : const SizedBox.shrink(),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('إلغاء')),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _onSave,
-                  style: AppButtons.primary(),
-                  child: const Text('حفظ'),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _onSave() async {
-    final box = Hive.box('settings');
-    await box.put('online_traffic_enabled', _online);
-    await box.put('traffic_provider', _provider);
-    await box.put('google_api_key', _googleKey.text.trim());
-    await box.put('here_api_key', _hereKey.text.trim());
-    await box.put('mapbox_access_token', _mapboxKey.text.trim());
-    if (!mounted) return;
-    Navigator.of(context).pop();
-  }
-}
+// Settings dialog removed: API keys managed internally; no user input.
 
 class _SplashView extends StatefulWidget {
   const _SplashView();
